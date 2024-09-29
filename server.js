@@ -31,20 +31,20 @@ const auth = new google.auth.GoogleAuth({
 // Create a Google Sheets client
 const sheets = google.sheets({ version: 'v4', auth });
 
-const SPREADSHEET_ID = '1NYT1E8DcevYEC6Z3Soa1haYK3wW6LykQx8TtrgygKIc'; // Your spreadsheet ID
+const SPREADSHEET_ID = '1fBgd9Aj7pWVkQvz_VE7KruswokTFqYhSp_-c3FnNJl8'; // Your spreadsheet ID
 
 // Route to handle form submissions
 app.post('/submit', async (req, res) => {
-  const { name, email, address } = req.body;
+  const { name, email, address, newsletter } = req.body;
 
   try {
     // Append data to the Google Sheet
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: 'Melbourne!A2:C2', // Assuming data goes into columns A, B, and C
+      range: 'Melbourne!A2:D2', // Assuming data goes into columns A, B, and C
       valueInputOption: 'RAW',
       resource: {
-        values: [[name, email, address]], // Data being submitted
+        values: [[name, email, address, newsletter]], // Data being submitted
       },
     });
 
