@@ -1,61 +1,123 @@
+// Code to run the server and handle requests
 const express = require('express');
 const { google } = require('googleapis');
 const bodyParser = require('body-parser');
 const cors = require('cors');
+const { Pool } = require('pg');
+const cluster = require('cluster'); // Clustering module
+const os = require('os'); // OS module to get the number of CPU cores
 require('dotenv').config(); // Load environment variables
+const fetch = require('node-fetch'); // Node.js module to make HTTP requests
 
-// Create an Express app
-const app = express();
-app.use(bodyParser.json()); // Parse JSON request body
-
-// CORS configuration
-const corsOptions = {
-  origin: '*', // Allow frontend origin (use environment variable or localhost)
-  methods: 'GET,POST,OPTIONS', // Allow the necessary methods
-  allowedHeaders: 'Content-Type,Authorization', // Allow necessary headers for your frontend
-  credentials: true, // Allow cookies or other credentials if needed
-  optionsSuccessStatus: 204, // Respond successfully for preflight requests
-};
-
-app.use(cors(corsOptions)); // Apply CORS middleware
-
-// Handle preflight requests (OPTIONS method)
-app.options('*', cors(corsOptions));
-
-// Google Sheets setup
-const auth = new google.auth.GoogleAuth({
-  keyFile: 'credentials.json', // Path to your credentials.json file from Google Cloud
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+// PostgreSQL connection setup
+const pool = new Pool({
+  user: 'postgres',
+  host: 'localhost',
+  database: 'halloween_events',
+  password: process.env.PG_PASSWORD,
+  port: 5432,
 });
 
-// Create a Google Sheets client
-const sheets = google.sheets({ version: 'v4', auth });
+//clustering setup
+if (cluster.isMaster) {
+  const numCPUs = os.cpus().length;
+  console.log(`Master process is running. Forking ${numCPUs} workers...`);
 
-const SPREADSHEET_ID = '1fBgd9Aj7pWVkQvz_VE7KruswokTFqYhSp_-c3FnNJl8'; // Your spreadsheet ID
-
-// Route to handle form submissions
-app.post('/submit', async (req, res) => {
-  const { name, email, address, newsletter } = req.body;
-
-  try {
-    // Append data to the Google Sheet
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'Melbourne!A2:D2', // Assuming data goes into columns A, B, and C
-      valueInputOption: 'RAW',
-      resource: {
-        values: [[name, email, address, newsletter]], // Data being submitted
-      },
-    });
-
-    res.status(200).send('Success! Your information has been saved.');
-  } catch (error) {
-    console.error('Error writing to Google Sheets:', error);
-    res.status(500).send('Failed to write data to Google Sheets');
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
   }
-});
 
-// Start the server
-const PORT = process.env.PORT || 5002; 
+  cluster.on('exit', (worker, code, signal) => {
+    console.log(`Worker ${worker.process.pid} died. Forking a new worker...`);
+    cluster.fork();
+  });
+} else {
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  const app = express();
+  app.use(bodyParser.json());
+
+  // CORS configuration
+  const corsOptions = {
+    origin: '*',
+    methods: 'GET,POST,OPTIONS',
+    allowedHeaders: 'Content-Type,Authorization',
+    credentials: true,
+    optionsSuccessStatus: 204,
+  };
+  app.use(cors(corsOptions));
+  app.options('*', cors(corsOptions));
+
+  const auth = new google.auth.GoogleAuth({
+    keyFile: 'credentials.json',
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  app.post('/submit', async (req, res) => {
+    const { name, email, address, newsletter } = req.body;
+
+    try {
+      // Check if the address has already been geocoded
+      const checkAddress = await pool.query('SELECT latitude, longitude FROM form_submissions WHERE address = $1', [address]);
+
+      let latitude, longitude;
+
+      if (checkAddress.rows.length > 0) {
+        // Use cached coordinates
+        latitude = checkAddress.rows[0].latitude;
+        longitude = checkAddress.rows[0].longitude;
+      } else {
+        // Use Google Geocoding API to get the latitude and longitude
+        const geocodingUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_API_KEY}`;
+
+        const response = await fetch(geocodingUrl);
+        const result = await response.json();
+
+        if (result.status === 'OK') {
+          latitude = result.results[0].geometry.location.lat;
+          longitude = result.results[0].geometry.location.lng;
+
+          // Save the new geocoded address to the database
+          await pool.query(
+            'INSERT INTO form_submissions (name, email, address, newsletter, latitude, longitude) VALUES ($1, $2, $3, $4, $5, $6)',
+            [name, email, address, newsletter, latitude, longitude]
+          );
+        } else {
+          throw new Error('Geocoding failed: ' + result.status);
+        }
+      }
+
+      // Append data to Google Sheets (optional, as before)
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: process.env.SPREADSHEET_ID,
+        range: 'Melbourne!A2:D2',
+        valueInputOption: 'RAW',
+        resource: {
+          values: [[name, email, address, newsletter]],
+        },
+      });
+
+      res.status(200).send({
+        message: 'Success! Your information has been saved.',
+      });
+    } catch (error) {
+      console.error('Error saving data:', error);
+      res.status(500).send('Failed to save data.');
+    }
+  });
+
+  app.get('/addresses', async (req, res) => {
+    try {
+      const result = await pool.query('SELECT address, latitude, longitude FROM form_submissions');
+      res.status(200).json(result.rows);
+    } catch (error) {
+      console.error('Error retrieving addresses:', error);
+      res.status(500).send('Failed to retrieve addresses.');
+    }
+  });
+
+  const PORT = process.env.PORT || 5002;
+
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
