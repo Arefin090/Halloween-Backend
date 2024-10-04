@@ -11,11 +11,11 @@ const fetch = require('node-fetch'); // Node.js module to make HTTP requests
 
 // PostgreSQL connection setup
 const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'halloween_events',
+  user: process.env.PG_USER,
+  host: process.env.PG_HOST,
+  database: process.env.PG_DATABASE,
   password: process.env.PG_PASSWORD,
-  port: 5432,
+  port: process.env.PG_PORT,
 });
 
 //clustering setup
@@ -38,7 +38,7 @@ if (cluster.isMaster) {
 
   // CORS configuration
   const corsOptions = {
-    origin: '*',
+    origin: '*' || process.env.CORS_ORIGIN, // Default to all origins
     methods: 'GET,POST,OPTIONS',
     allowedHeaders: 'Content-Type,Authorization',
     credentials: true,
@@ -48,7 +48,7 @@ if (cluster.isMaster) {
   app.options('*', cors(corsOptions));
 
   const auth = new google.auth.GoogleAuth({
-    keyFile: 'credentials.json',
+    keyFile: process.env.GOOGLE_CREDENTIALS_PATH,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
